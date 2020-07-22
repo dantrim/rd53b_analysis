@@ -1,0 +1,48 @@
+*.DS_Store
+*~
+\#*
+.\#*
+build/*
+
+##
+## python
+##
+*.pyc
+*.log
+*.egg-info
+*.pickle
+*pycache*
+
+##
+## build files
+##
+*.lo
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+*.cxx.d
+
+##
+## vim autosave
+##
+*.swo
+*.swp
+*.swk
+*.swn
+*.slo
+
+##
+## emacs ignore
+##
+*~
+*.autosave
+
+##
+## HDL ignores
+##
+
+##
+## misc
+##
