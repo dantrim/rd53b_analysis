@@ -22,5 +22,5 @@ setup(
         "scipy",
         "jsonschema"
     ],
-    entry_points = {"console_scripts": ["rd53b=rd53b_ana:cli"]},
+    entry_points = {"console_scripts": ["rd53b=analysis.cli:cli"]},
 )
