@@ -35,13 +35,20 @@ def cli():
     type=click.Choice(["digital", "analog"], case_sensitive=False),
     default="digital",
 )
-def ivscan(input_file, current):
+@click.option("--summary", is_flag=True)
+def ivscan(input_file, current, summary):
 
     if file_does_not_exist(input_file):
         print(f"ERROR Provided input file (={input_file}) could not be found")
         sys.exit(1)
 
-    ok, err = iv.plot(input_file, current)
-    if not ok:
-        print(f"ERROR Failed to plot IV-scan data: {err}")
-        sys.exit(1)
+    if summary:
+        ok, err = iv.plot_summary(input_file, current)
+        if not ok:
+            print(f"ERROR Failed to plot IV-scan summary: {err}")
+            sys.exit(1)
+    else:
+        ok, err = iv.plot(input_file, current)
+        if not ok:
+            print(f"ERROR Failed to plot IV-scan data: {err}")
+            sys.exit(1)
