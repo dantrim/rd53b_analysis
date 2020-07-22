@@ -12,11 +12,11 @@ Table of Contents
 ## Requirements
 
 Here is a list:
-   * python (>=3.6) (see [Installing Python](#installing-python))
+   * `python` (>=3.6) (see [Installing Python](#installing-python))
 
 ## Installing Python
 
-If you do not have python, or you do not have the requisite version, you can checkout [danny_installs_python](https://github.com/dantrim/danny_installs_python):
+If you do not have `python`, or you do not have the requisite version, you can checkout [danny_installs_python](https://github.com/dantrim/danny_installs_python):
 ```bash
 $ git clone https://github.com/dantrim/danny_installs_python.git
 $ source danny_installs_python/compiler_flags.sh # only if you need (and especially if you are on Mac OSX)
@@ -32,5 +32,6 @@ $ git clone https://github.com/dantrim/danny_installs_python.git
 $ source danny_installs_python/compiler_flags.sh # only if you need (and especially if you are on Mac OSX)
 $ source danny_installs_python/pyenv_install_python.sh
 ```
+See [here](https://realpython.com/intro-to-pyenv/) for how to install `pyenv` (spoiler: it's super easy).
 
 Follow the discussion at [danny_installs_python](https://github.com/dantrim/danny_installs_python#pre-requisites) to understand how to obtain `python`'s own dependencies.
