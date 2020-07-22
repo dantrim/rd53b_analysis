@@ -46,11 +46,12 @@ def get_scans_from_file(input_file):
                 continue
 
             # we assume that the measured quantities stay fixed
+            # column separated data is assumed!
             if "I_lim" in line:
-                field_names = line.split()
+                field_names = line.split(",")
                 continue
 
-            data_fields = [float(x) for x in line.split()]
+            data_fields = [float(x) for x in line.split(",")]
             data = dict(zip(field_names, data_fields))
             p = Measurement(data)
             current_scan.measurements.append(p)
