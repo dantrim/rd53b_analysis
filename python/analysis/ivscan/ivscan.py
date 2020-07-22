@@ -10,14 +10,24 @@ class Measurement:
         self.data = data
 
     def get_field(self, field_name=""):
+        if field_name == "VDDEFUSE":
+            return self.data["PS_VE"]
         return self.data[field_name]
 
 
 class Scan:
     def __init__(self, header, chip_id):
         self.header = header
+        self.fixed_vdd = self.fixed_from_header(header)
         self.chip_id = chip_id
         self.measurements = []
+
+    def fixed_from_header(self, header):
+
+        for field_name in header:
+            if "VDD" in field_name:
+                return field_name
+        raise Exception(f"ERROR Could not get fixed from header for header: {header}")
 
 
 def get_scans_from_file(input_file):
@@ -47,7 +57,7 @@ def get_scans_from_file(input_file):
 
             # we assume that the measured quantities stay fixed
             # column separated data is assumed!
-            if "I_lim" in line:
+            if "PS_VD_set" in line:
                 field_names = line.split(",")
                 continue
 
@@ -84,7 +94,8 @@ def plot(input_file, current="digital"):
     for scan in scans:
         for imeas, meas in enumerate(scan.measurements):
 
-            x_data.append(meas.get_field("VDDA"))
+            # x_data.append(meas.get_field("VDDA"))
+            x_data.append(meas.get_field(scan.fixed_vdd))
             y_data.append(meas.get_field("VDDD"))
             if current.lower() == "digital":
                 z_data.append(meas.get_field("PS_I_D"))
@@ -98,7 +109,7 @@ def plot(input_file, current="digital"):
 
     p = ax.pcolormesh(X, Y, Z, cmap="YlOrRd", shading="auto")
 
-    ax.set_xlabel("SCC VDDA [V]", fontsize=12)
+    ax.set_xlabel(f"SCC {scans[0].fixed_vdd} [V]", fontsize=12)
     ax.set_ylabel("SCC VDDD [V]", fontsize=12)
 
     cb = fig.colorbar(p)
@@ -141,8 +152,9 @@ def plot_summary(input_file, current="digital"):
         return False, "No scans loaded!"
 
     fixed_ramp_quantity = ""
+    allowed_fixed_ramp_quantities = ["VDDA", "VDDD", "VDDEFUSE"]
     for key, val in total_scans[0].header.items():
-        if key == "VDDA" or key == "VDDD":
+        if key in allowed_fixed_ramp_quantities:
             fixed_ramp_quantity = key
     if fixed_ramp_quantity == "":
         return False, "Could not determine fixed ramp quantity!"
@@ -178,12 +190,29 @@ def plot_summary(input_file, current="digital"):
         x_data, y_data, z_data = [], [], []
         for scan in scans:
             for imeasurement, measurement in enumerate(scan.measurements):
-                if fixed_ramp_quantity == "VDDA":
-                    x_data.append(measurement.get_field("VDDA"))
-                    y_data.append(measurement.get_field("VDDD"))
-                elif fixed_ramp_quantity == "VDDD":
-                    x_data.append(measurement.get_field("VDDD"))
-                    y_data.append(measurement.get_field("VDDA"))
+                data_vals = {
+                    "VDDA": [
+                        measurement.get_field("VDDA"),
+                        measurement.get_field("VDDD"),
+                    ],
+                    "VDDD": [
+                        measurement.get_field("VDDD"),
+                        measurement.get_field("VDDA"),
+                    ],
+                    "VDDEFUSE": [
+                        measurement.get_field("VDDEFUSE"),
+                        measurement.get_field("VDDD"),
+                    ],
+                }[fixed_ramp_quantity]
+                x_data.append(data_vals[0])
+                y_data.append(data_vals[1])
+                # if fixed_ramp_quantity == "VDDA":
+                #    x_data.append(measurement.get_field("VDDA"))
+                #    y_data.append(measurement.get_field("VDDD"))
+                # elif fixed_ramp_quantity == "VDDD":
+                #    x_data.append(measurement.get_field("VDDD"))
+                #    y_data.append(measurement.get_field("VDDA"))
+                # elif fixed_ramp_quantity == "VDDEFUSE"
 
                 if current.lower() == "digital":
                     z_data.append(measurement.get_field("PS_I_D"))
@@ -205,9 +234,10 @@ def plot_summary(input_file, current="digital"):
         ## labels
         ##
         labels = {
-            True: ["SCC VDDA [V]", "SCC VDDD [V]"],
-            False: ["SCC VDDD [V]", "SCC VDDA [V]"],
-        }[fixed_ramp_quantity == "VDDA"]
+            "VDDA": ["SCC VDDA [V]", "SCC VDDD [V]"],
+            "VDDD": ["SCC VDDD [V]", "SCC VDDA [V]"],
+            "VDDEFUSE": ["SCC VDD_EFUSE [V]", "SCC VDDD [V]"],
+        }[fixed_ramp_quantity]
         ax.set_xlabel(labels[0], fontsize=12)
         ax.set_ylabel(labels[1], fontsize=12)
         zlabel = {True: "Analog Current [A]", False: "Digital Current [A]"}[
