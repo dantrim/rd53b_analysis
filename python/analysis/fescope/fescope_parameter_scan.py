@@ -12,12 +12,75 @@ import glob
 
 from plot_fescope_json import get_thresholds_from_input
 
+def dac_to_mv_conversion(dac_data_file) :
+
+    if dac_data_file == "" :
+        return {}
+
+    dac2mv = {}
+    with open(dac_data_file, "r") as infile :
+        for line in infile :
+            line = line.strip()
+            if line.startswith("#") : continue
+            fields = [x.strip() for x in line.split(",")]
+            dac_setting = int(fields[0])
+            voltage = float(fields[2]) # get the data at 3000e (field[1] is 1500e)
+            voltage_mV = voltage * 1e3
+            dac2mv[dac_setting] = voltage_mV
+    return dac2mv
+
+def get_sim_data(simulation_data_file) :
+
+    x_vals, y_vals = [], []
+    if simulation_data_file == "" :
+        return [], []
+
+    with open(simulation_data_file, "r") as infile :
+        for line in infile :
+            line = line.strip()
+            if line.startswith("#") : continue
+            fields = line.split()
+            time = float(fields[0])
+            time_ns = 1e9 * time
+            pulse = float(fields[2])
+            pulse_mV = pulse * 1e3
+
+            x_vals.append(time_ns)
+            y_vals.append(pulse_mV)
+
+    ##
+    ## remove a.u. offset
+    ##
+    voffset = y_vals[0]
+    tmp_y_vals = []
+    for val in y_vals :
+        if voffset < 0 :
+            tmp_y_vals.append( val + abs(voffset) )
+        else :
+            tmp_y_vals.append( val - abs(voffset) )
+    y_vals = tmp_y_vals
+
+    ##
+    ## multiplier
+    ##
+    peak = max(y_vals)
+    multiplier = 1
+    tmp_y_vals = []
+    for val in y_vals :
+        tmp_y_vals.append( val * multiplier )
+    y_vals = tmp_y_vals
+
+    return x_vals, y_vals
 
 def plot_feshape_for_parameters(data_param_map, param_name = "",
         parameter_values = [], do_error = False, digital_scan_toa_map_file = None,
-        select_pixel_address = (-1,-1)) :
+        select_pixel_address = (-1,-1), threshold_truncate = -1,
+        subtract_vertical_offset = False, sim_data_file = "", dac_data_file = "") :
 
     #parameter_values = sorted(data_param_map.keys())
+
+    sim_x_vals, sim_y_vals = get_sim_data(sim_data_file)
+    dac2mv_map = dac_to_mv_conversion(dac_data_file)
 
     max_x = -1
     max_y = -1
@@ -28,6 +91,8 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
     fig, ax = plt.subplots(1,1)
     ax.set_xlabel(f"Time [ns]")
     ax.set_ylabel(r"$\Delta$th [counts]")
+    if dac2mv_map :
+        ax.set_ylabel(r"$\Delta$th [mV]")
     ax.tick_params(which = "both", direction = "in", top = True, bottom = True, left = True, right = True)
 
     ##
@@ -107,23 +172,21 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
                 n = len(all_toa_data)
                 #if th >= 500 :
                 #    break
-                if n_nonzero_pixels > 0 :
-                    if n <= 0.99 * n_nonzero_pixels :
-                        break
+                #if n_nonzero_pixels > 0 :
+                #    if n <= 0.99 * n_nonzero_pixels :
+                #        break
                 n_nonzero_pixels = n
 
                 ##
                 ## subtract off the per-pixel average PToT mean when running a digital scan
                 ##
                 all_toa_data = all_toa_data - digital_offset_map
-                #else :
-                #    ptoa_digital_scan = 190.5
-                #    all_toa_data = all_toa_data - ptoa_digital_scan
 
                 ##
                 ## rising edge points of interest and convert to ns
                 ##
-                t_conv = 1.0
+                t_conv = 1.5625
+                print(f" *** Using timing conversion factor: {t_conv} *** ")
                 mean_rising_edge = np.mean(all_toa_data) * t_conv
 
                 ##
@@ -135,6 +198,12 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
                 if mean_rising_edge < 0 :
                     print(f"[param={parameter_val}] [th={th}] Mean rising edge NEGATIVE! {mean_rising_edge}")
                     continue
+
+                ##
+                ## convert to mV if loaded a DAC-to-mV file
+                ##
+                if dac2mv_map :
+                    th = dac2mv_map[th]
 
                 stddev_rising_edge = np.std(all_toa_data) * t_conv 
                 x_vals_rising_edge.append(mean_rising_edge)
@@ -164,8 +233,62 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
         if parameter_val < 0 :
             parameter_label = "neg. " + str(parameter_label)
 
-        y_vals_rising_edge = [x - y_vals_rising_edge[0] for x in y_vals_rising_edge]
-        y_vals_falling_edge = [x - y_vals_falling_edge[0] for x in y_vals_falling_edge]
+        
+        print(f" *** WARNING: REMOVING DATA POINTS *** ")
+        print(f" *** WARNING: REMOVING DATA POINTS *** ")
+        print(f" *** WARNING: REMOVING DATA POINTS *** ")
+        x_rising_tmp, x_falling_tmp = [], []
+        y_rising_tmp, y_falling_tmp = [], []
+        for i, val in enumerate(x_vals_rising_edge) :
+            if i == 0 : continue
+            x_rising_tmp.append(val)
+            x_falling_tmp.append(x_vals_falling_edge[i])
+            y_rising_tmp.append(y_vals_rising_edge[i])
+            y_falling_tmp.append(y_vals_falling_edge[i])
+        x_vals_rising_edge = x_rising_tmp
+        x_vals_falling_edge = x_falling_tmp
+        y_vals_rising_edge = y_rising_tmp
+        y_vals_falling_edge = y_falling_tmp
+
+        if subtract_vertical_offset :
+            y_vals_rising_edge = [x - y_vals_rising_edge[0] for x in y_vals_rising_edge]
+            y_vals_falling_edge = [x - y_vals_falling_edge[0] for x in y_vals_falling_edge]
+
+        if threshold_truncate >= 0 :
+            tmp_x_rising, tmp_x_falling = [], []
+            tmp_y_rising, tmp_y_falling = [], []
+            for ival, val in enumerate(y_vals_rising_edge) :
+                if val > threshold_truncate : continue
+                tmp_y_rising.append(val)
+                tmp_x_rising.append(x_vals_rising_edge[ival])
+            for ival, val in enumerate(y_vals_falling_edge) :
+                if val > threshold_truncate : continue
+                tmp_y_falling.append(val)
+                tmp_x_falling.append(x_vals_falling_edge[ival])
+
+            x_vals_rising_edge = tmp_x_rising
+            x_vals_falling_edge = tmp_x_falling
+            y_vals_rising_edge = tmp_y_rising
+            y_vals_falling_edge = tmp_y_falling
+
+            ##
+            ## scale
+            ##
+            #y_vals_rising_edge = [x/threshold_truncate for x in y_vals_rising_edge]
+            #y_vals_falling_edge = [x/threshold_truncate for x in y_vals_falling_edge]
+
+        if param_name == "VCalHigh" :
+            param_name = "∆Vcal"
+            parameter_label = int(parameter_label) - 200
+
+
+        if len(sim_x_vals) > 0 :
+            t_offset = x_vals_rising_edge[0]
+            t_offset -= 1.44
+            print(f"Applying ∆t shift in observed data of {t_offset} ns")
+            x_vals_rising_edge = [x - abs(t_offset) for x in x_vals_rising_edge]
+            x_vals_falling_edge = [x - abs(t_offset) for x in x_vals_falling_edge]
+
         ax.plot(x_vals_rising_edge, y_vals_rising_edge, color = param_colors[iparam], label = f"{param_name}:{parameter_label}")
         ax.plot(x_vals_falling_edge, y_vals_falling_edge, color = param_colors[iparam])
 
@@ -176,9 +299,10 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
         if do_error :
             ax.fill_betweenx(y_vals_falling_edge, x_vals_falling_edge - stddev_falling_edge, x_vals_falling_edge + stddev_falling_edge, alpha = 0.3, color = param_colors[iparam])
 
-    max_x = 250
+    max_x = 180
+    #max_y = 400
     ax.set_xlim([0, max_x])
-    ax.set_ylim([0, 1.1 * max_y])
+    #ax.set_ylim([0, 1.1 * max_y])
 
     x_ticks = np.arange(0, max_x + 25, 25)
     ax.set_xticks(x_ticks)
@@ -190,7 +314,6 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
             x_tick_labels.append("")
     ax.set_xticklabels(x_tick_labels)
     ax.grid(which = "both")
-    ax.legend(loc = "best")
 
     ##
     ## metadata text
@@ -202,8 +325,26 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
     else :
         ax.text(0.39, 1.02, f": Many pixels", transform = ax.transAxes, weight = "bold")
 
+    ##
+    ## simulation data overlay
+    ##
+    if len(sim_x_vals) > 0 :
+        sim_x_plot, sim_y_plot = [], []
+        for ival, val in enumerate(sim_x_vals) :
+            if val >= 0 and val < max_x :
+                sim_x_plot.append(val)
+                sim_y_plot.append(sim_y_vals[ival])
+        print(f"FOO max sim_y_vals = {max(sim_y_plot)}")
+        ax.plot(sim_x_plot, sim_y_plot, "k-", label = "Simulation")
+
+    ##
+    ## legend
+    ##
+    ax.legend(loc = "best")
+
     fig.show()
     x = input()
+    fig.savefig("fescope_plot.pdf", bbox_inches = "tight")
 
 def main() :
 
@@ -229,8 +370,19 @@ def main() :
     parser.add_argument("-p", "--pixel", default = "-1:-1",
         help = "Provide pixel address in format <col>:<row>"
     )
+    parser.add_argument("-t", "--truncate", default = -1,
+        help = "Truncate the thresholds to be below the specified value"
+    )
+    parser.add_argument("--voff", default = False, action = "store_true",
+        help = "Subtract any vertical offset in FE pulse"
+    )
+    parser.add_argument("--sim-data", default = "",
+        help = "Provide data from simulation for comparison"
+    )
+    parser.add_argument("--dac-data", default = "",
+        help = "Provide a file with DAC-to-mV relationship"
+    )
     args = parser.parse_args()
-
 
     all_dirs = glob.glob(f"{args.input}/*")
     param_vals = []
@@ -248,6 +400,8 @@ def main() :
         param_vals.append(val)
         complete_path = f"{d}/last_scan"
         data_param_map[val] = get_thresholds_from_input(complete_path)
+
+    args.truncate = int(args.truncate)
 
     if args.name != "" :
         param_name = args.name
@@ -280,7 +434,7 @@ def main() :
         print(f"ERROR Provided digital scan ToA map could not be found: \"{args.digital_scan}\"")
         sys.exit(1)
 
-    plot_feshape_for_parameters(data_param_map, param_name, param_vals, args.error, args.digital_scan, select_pixel_address)
+    plot_feshape_for_parameters(data_param_map, param_name, param_vals, args.error, args.digital_scan, select_pixel_address, args.truncate, args.voff, args.sim_data, args.dac_data)
 
     
 
