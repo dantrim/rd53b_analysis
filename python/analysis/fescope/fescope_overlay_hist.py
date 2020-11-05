@@ -3,6 +3,9 @@
 from pathlib import Path
 import sys
 from argparse import ArgumentParser
+from scipy.interpolate import griddata
+from scipy.stats import norm
+from scipy.optimize import curve_fit
 
 import json
 import matplotlib.pyplot as plt
@@ -72,10 +75,56 @@ def get_sim_data(simulation_data_file) :
 
     return x_vals, y_vals
 
+def core_generator(toa_map, tot_map, digital_offset_map) :
+
+    n_core_columns = 50
+    n_core_rows = 48
+    
+    core_col_edges = []
+    core_row_edges = []
+    core_edges = []
+    
+    col_low = 0
+    row_low = 0
+    for i in range(n_core_columns) :
+        low_edge = col_low
+        if col_low <= 1 :
+            low_edge = 2
+        high_edge = col_low + 8
+        if high_edge >= 398 :
+            high_edge = 397
+        edge = (low_edge, high_edge)
+        col_low += 8
+        core_col_edges.append(edge)
+    for i in range(n_core_rows) :
+        edge = (row_low, row_low + 8)
+        row_low += 8
+        core_row_edges.append(edge)
+    
+    core_num = 0
+    for icol, col_edges in enumerate(core_col_edges) :
+        for irow, row_edges in enumerate(core_row_edges) :
+            pix_columns = np.arange(col_edges[0], col_edges[1], 1)
+            pix_rows = np.arange(row_edges[0], row_edges[1], 1)
+    
+            c = (col_edges[0], col_edges[1])
+            r = (row_edges[0], row_edges[1])
+            #print(f"Core Number {core_num}: ({c}, {r})")
+            core_num+= 1
+            yield toa_map[c[0]:c[1], r[0]:r[1]], tot_map[c[0]:c[1], r[0]:r[1]], digital_offset_map[c[0]:c[1], r[0]:r[1]]
+    
+        #yield toa_map[col_edges[0]:col_edges[1], row_edges[0]:row_edges[1]], tot_map[col_edges[0]:col_edges[1], row_edges[0]:row_edges[1]], digital_offset_map[col_edges[0]:col_edges[1], row_edges[0]:row_edges[1]]
+
+def deleteFrom2D(arr2D, row, column):
+    'Delete element from 2D numpy array by row and column position'
+    modArr = np.delete(arr2D, row * arr2D.shape[1] + column)
+    return modArr
+
 def plot_feshape_overlay(data_map, param_name = "",
         parameter_values = [], do_error = False, digital_scan_toa_map_file = None,
         select_pixel_address = (-1,-1), threshold_truncate = -1,
-        subtract_vertical_offset = False, sim_data_file = "", dac_data_file = "") :
+        subtract_vertical_offset = False, sim_data_file = "", dac_data_file = "",
+        do_core_averaging = False) :
 
     sim_x_vals, sim_y_vals = get_sim_data(sim_data_file)
     dac2mv_map = dac_to_mv_conversion(dac_data_file)
@@ -97,119 +146,122 @@ def plot_feshape_overlay(data_map, param_name = "",
 
     thresholds = sorted(data_map.keys())
 
-    x_vals_rising_edge, y_vals_rising_edge = np.array([]), np.array([])
-    x_vals_falling_edge, y_vals_falling_edge = np.array([]), np.array([])
 
     n_nonzero_pixels = 0
 
     t_offset = -1
+    n_cores_max = -1
+    core_map_z = {}
+
+    core_toa_vals = {}
+    core_tot_vals = {}
 
     for ith, th in enumerate(thresholds) :
+        n_core_toa = 0
+
+        if th > 220 :
+            print(f"Breaking early (at th = {th}) from th scan!")
+            break
+
+        x_vals_rising_edge, y_vals_rising_edge = np.array([]), np.array([])
+        x_vals_falling_edge, y_vals_falling_edge = np.array([]), np.array([])
+
+        n_cores = 0
+        core_toa_vals[th] = []
+        core_tot_vals[th] = []
+
         tot_filename, toa_filename = data_map[th]
         with open(toa_filename, "r") as toa_file, open(tot_filename, "r") as tot_file, open(digital_scan_toa_map_file, "r") as digital_toa_file :
             all_toa_data = np.array(json.load(toa_file)["Data"])
             all_tot_data = np.array(json.load(tot_file)["Data"])
             digital_offset_map = np.array(json.load(digital_toa_file)["Data"])
 
-            ##
-            ## remove LR columns or specific pixel selected by the user
-            ##
-            select_col, select_row = select_pixel_address
-            if select_col >= 0 or select_row >= 0 :
-                if select_row < 0 and select_col >= 0:
-                    all_toa_data =             all_toa_data[select_col,:]
-                    all_tot_data =             all_tot_data[select_col,:]
-                    digital_offset_map = digital_offset_map[select_col,:]
-                elif select_col < 0 and select_row >= 0 :
-                    all_toa_data =             all_toa_data[:,select_row]
-                    all_tot_data =             all_tot_data[:,select_row]
-                    digital_offset_map = digital_offset_map[:,select_row]
-                else :
-                    all_toa_data =             all_toa_data[select_col,select_row]
-                    all_tot_data =             all_tot_data[select_col,select_row]
-                    digital_offset_map = digital_offset_map[select_col,select_row]
-            else :
-                all_toa_data = all_toa_data[2:398,:]
-                all_tot_data = all_tot_data[2:398,:]
-                digital_offset_map = digital_offset_map[2:398,:]
-
-
-            ##
-            ## select nonzero data (i.e. select only those pixels with 100% occupancy)
-            ##
-            idx = (all_toa_data > 0) & (all_tot_data > 0) & (digital_offset_map > 0)
-            all_toa_data = all_toa_data[idx]
-            all_tot_data = all_tot_data[idx]
-            digital_offset_map = digital_offset_map[idx]
-
-
-            ##
-            ## set the rising edge to have all the same mean at each height (threshold)
-            ##
-            if th not in rising_edge_fix_map :
-                rising_edge_fix_map[th] = np.mean(all_toa_data)
-            all_toa_data = all_toa_data + (rising_edge_fix_map[th] - all_toa_data)
-
-            ##
-            ## check if we have peaked or not, if so don't include those points
-            ##
-            n = len(all_toa_data)
-            #if th >= 500 :
-            #    break
-            #if n_nonzero_pixels > 0 :
-            #    if n <= 0.99 * n_nonzero_pixels :
-            #        break
-            n_nonzero_pixels = n
-
-            ##
-            ## subtract off the per-pixel average PToT mean when running a digital scan
-            ##
-            all_toa_data = all_toa_data - digital_offset_map
-
-            ##
-            ## rising edge points of interest and convert to ns
-            ##
             t_conv = 1.5625
-            all_toa_data *= t_conv
-            all_tot_data *= t_conv
+            #if do_core_averaging :
+            if True :
 
-            ##
-            ## clean out unfilled data
-            ##
-            #if np.isnan(mean_rising_edge) :
-            #    continue
+                pulse_height = th
 
-            #if mean_rising_edge < 0 :
-            #    print(f"[param={parameter_val}] [th={th}] Mean rising edge NEGATIVE! {mean_rising_edge}")
-            #    continue
+                for core_toa, core_tot, core_digital in core_generator(all_toa_data, all_tot_data, digital_offset_map) :
 
-            ##
-            ## convert to mV if loaded a DAC-to-mV file
-            ##
-            if dac2mv_map :
-                th = dac2mv_map[th]
+                    #if not do_core_averaging :
+                    #    core_toa = core_toa[2:398,:]
+                    #    core_tot = core_tot[2:398,:]
+                    #    core_digital = core_digital[2:398,:]
 
-            if th == 0 :
-                continue
-            #if ith == 0 :
-            if t_offset < 0 :
-                arr = x_vals_rising_edge[~np.isnan(x_vals_rising_edge)]
-                offset = np.mean(arr)
-                std = np.std(arr)
-                if not np.isnan(offset) :
-                    t_offset = offset - std
+                    #if core_toa.shape[0] != 8 :
+                    #    continue
 
-            if ith == 12 :
-                mean = np.mean(all_toa_data)
-                std = np.std(all_toa_data)
-                min_rising = np.min(all_toa_data)
-                max_rising = np.max(all_toa_data)
-                print(f"THRESHOLD = {th}: ToA: {mean} +/- {std} ns, WIDTH: {max_rising - min_rising} ns")
+                    idx = (core_toa > 0)# & (core_tot > 0) & (core_digital > 0)
+                    if not np.any(idx) :
+                        continue
 
-            x_vals_rising_edge = np.concatenate([x_vals_rising_edge, all_toa_data])
-            x_vals_falling_edge = np.concatenate([x_vals_falling_edge, all_toa_data + all_tot_data])
-            y_vals_rising_edge = np.concatenate([y_vals_rising_edge, np.ones(len(all_toa_data)) * th])
-            y_vals_falling_edge = np.concatenate([y_vals_falling_edge, np.ones(len(all_tot_data)) * th])
+                    core_is_bad = False
+                    if ith == 11 and core_toa.shape[0] == 8 : #and n_cores < 100 :
+                        fills = 0
+                        for col in np.arange(0,8,1) :
+                            for row in np.arange(0,8,1) :
+                                address = (col,row)
+                                if address not in core_map_z :
+                                    core_map_z[address] = []
+                                toa = core_toa[col][row] - core_digital[col][row]
+                                toa *= t_conv
+                                toa -= 12
+                                if toa < 0 : continue
+                                core_map_z[address].append(toa)
+                    n_cores += 1
+
+                    core_toa = core_toa[idx]
+                    core_tot = core_tot[idx]
+                    core_digital = core_digital[idx]
+
+                    core_toa = core_toa - core_digital
+                    pos_idx = core_toa > 0
+                    core_toa = core_toa[pos_idx]
+                    core_tot = core_tot[pos_idx]
+
+                    core_toa *= t_conv
+                    core_tot *= t_conv
+
+                    n_core_toa += core_toa.size
+
+                    avg_core_toa = np.mean(core_toa)
+                    avg_core_tot = np.mean(core_tot)
+
+                    if do_core_averaging :
+                        core_toa_vals[th].append(avg_core_toa)
+                    else :
+                        core_toa_vals[th] += list(core_toa)
+                    #core_tot_vals[th].append(avg_core_tot)
+
+                    ##
+                    ## convert to mV if loaded a DAC-to-mV file
+                    ##
+                    if dac2mv_map :
+                        pulse_height = dac2mv_map[th]
+
+                    if do_core_averaging :
+                        x_vals_rising_edge = np.concatenate([x_vals_rising_edge, [avg_core_toa]])
+                        x_vals_falling_edge = np.concatenate([x_vals_falling_edge, [avg_core_toa + avg_core_tot]])
+                        y_vals_rising_edge = np.concatenate([y_vals_rising_edge, [pulse_height]])
+                        y_vals_falling_edge = np.concatenate([y_vals_falling_edge, [pulse_height]])
+                    else :
+                        x_vals_rising_edge = np.concatenate([x_vals_rising_edge, core_toa])
+                        falling_edge = core_toa + core_tot
+                        x_vals_falling_edge = np.concatenate([x_vals_falling_edge, falling_edge])
+                        y_vals_rising_edge = np.concatenate([y_vals_rising_edge, np.ones(len(core_toa)) * pulse_height])
+                        y_vals_falling_edge = np.concatenate([y_vals_falling_edge, np.ones(len(falling_edge)) * pulse_height])
+
+                if t_offset < 0 :
+                    arr = x_vals_rising_edge[~np.isnan(x_vals_rising_edge)]
+                    offset = np.mean(arr)
+                    std = np.std(arr)
+                    if not np.isnan(offset) :
+                        t_offset = offset - std
+                t_offset = 12
+
+                print(f"Threshold = {th} counts: Number of cores considered: {n_cores}")
+                n_cores_max = max([n_cores, n_cores_max])
 
             ##
             ## boundaries for plotting
@@ -217,24 +269,30 @@ def plot_feshape_overlay(data_map, param_name = "",
             max_x = max([max_x, np.max(x_vals_falling_edge)])
 
             y_to_check = th
-            max_y = max([max_y, np.max(y_vals_falling_edge)])
+            #max_y = max([max_y, np.max(y_vals_falling_edge)])
+            max_y = 500
 
+            x = np.concatenate([x_vals_rising_edge, x_vals_falling_edge])
+            x -= (t_offset + 4)
+            y = np.concatenate([y_vals_rising_edge, y_vals_falling_edge])
+            x_bw = 1
+            y_bw = dac2mv_map[10]
+            max_x = 200
+            x_bins = np.arange(0, max_x + x_bw, x_bw)
+            y_bins = np.arange(0, max_y + y_bw, y_bw)
+            cmin = 10
+            if not do_core_averaging :
+                cmin = 100
+            h, xedges, yedges, im = ax.hist2d(x,y, bins = (x_bins, y_bins), norm = matplotlib.colors.LogNorm(), cmap = plt.cm.YlOrRd, cmin = 10)
 
-    #print(f" *** WARNING: REMOVING DATA POINTS *** ")
-    #print(f" *** WARNING: REMOVING DATA POINTS *** ")
-    #print(f" *** WARNING: REMOVING DATA POINTS *** ")
-    #x_rising_tmp, x_falling_tmp = [], []
-    #y_rising_tmp, y_falling_tmp = [], []
-    #for i, val in enumerate(x_vals_rising_edge) :
-    #    if i == 0 : continue
-    #    x_rising_tmp.append(val)
-    #    x_falling_tmp.append(x_vals_falling_edge[i])
-    #    y_rising_tmp.append(y_vals_rising_edge[i])
-    #    y_falling_tmp.append(y_vals_falling_edge[i])
-    #x_vals_rising_edge = x_rising_tmp
-    #x_vals_falling_edge = x_falling_tmp
-    #y_vals_rising_edge = y_rising_tmp
-    #y_vals_falling_edge = y_falling_tmp
+        if ith == 11 : #and do_core_averaging :
+
+            arr = x_vals_rising_edge - (t_offset + 4)
+            h, edges = np.histogram(arr, bins = np.arange(0, max_x, 1.5625))
+            mean, std = np.mean(arr), np.std(arr)
+            arr_fit = arr#[(arr > (mean-std)) & (arr < (mean+std))]
+            mu, sigma = norm.fit(arr_fit)
+            print(f"THRESHOLD = {dac2mv_map[th]} mV: ToA: {mu} +/- {sigma} ns")
 
     #if subtract_vertical_offset :
     #    y_vals_rising_edge = [x - y_vals_rising_edge[0] for x in y_vals_rising_edge]
@@ -248,60 +306,29 @@ def plot_feshape_overlay(data_map, param_name = "",
         x_vals_falling_edge = x_vals_falling_edge[idx]
         y_vals_falling_edge = y_vals_falling_edge[idx]
 
-        #tmp_x_rising, tmp_x_falling = [], []
-        #tmp_y_rising, tmp_y_falling = [], []
-        #for ival, val in enumerate(y_vals_rising_edge) :
-        #    if val > threshold_truncate : continue
-        #    tmp_y_rising.append(val)
-        #    tmp_x_rising.append(x_vals_rising_edge[ival])
-        #for ival, val in enumerate(y_vals_falling_edge) :
-        #    if val > threshold_truncate : continue
-        #    tmp_y_falling.append(val)
-        #    tmp_x_falling.append(x_vals_falling_edge[ival])
-
-        #x_vals_rising_edge = tmp_x_rising
-        #x_vals_falling_edge = tmp_x_falling
-        #y_vals_rising_edge = tmp_y_rising
-        #y_vals_falling_edge = tmp_y_falling
-
-        ##
-        ## scale
-        ##
-        #y_vals_rising_edge = [x/threshold_truncate for x in y_vals_rising_edge]
-        #y_vals_falling_edge = [x/threshold_truncate for x in y_vals_falling_edge]
-
-    #@##
-    #@## ∆t offset
-    #@##
-    #@#t_offset = x_vals_rising_edge[0] # th = 0
-    #@if len(sim_x_vals) > 0 :
-    #@    t_offset = x_vals_rising_edge[0]
-    #@    #t_offset -= 1.44
-    #@    print(f"Applying ∆t shift in observed data of {t_offset} ns")
-    #@    x_vals_rising_edge = [x - abs(t_offset) for x in x_vals_rising_edge]
-    #@    x_vals_falling_edge = [x - abs(t_offset) for x in x_vals_falling_edge]
-
-
-    x = np.concatenate([x_vals_rising_edge, x_vals_falling_edge])
-    y = np.concatenate([y_vals_rising_edge, y_vals_falling_edge])
+    #x = np.concatenate([x_vals_rising_edge, x_vals_falling_edge])
+    #y = np.concatenate([y_vals_rising_edge, y_vals_falling_edge])
 
     ##
     ## apply ∆t offset
     ##
     print(f"Applying ∆t offset of {t_offset} ns")
-    x -= (t_offset - 2)
+    #x -= (t_offset - 2)
+    #x -= (t_offset + 2)
 
-    x_bw = 1.5625
-    y_bw = 10
-    max_x = 200
-    x_bins = np.arange(0, max_x + x_bw, x_bw)
-    y_bins = np.arange(0, max_y + y_bw, y_bw)
-    h, xedges, yedges, im = ax.hist2d(x,y, bins = (x_bins, y_bins), norm = matplotlib.colors.LogNorm(), cmap = plt.cm.YlOrRd)
+#    x_bw = 1.5625
+#    y_bw = 10
+#    max_x = 200
+#    x_bins = np.arange(0, max_x + x_bw, x_bw)
+#    y_bins = np.arange(0, max_y + y_bw, y_bw)
+#    h, xedges, yedges, im = ax.hist2d(x,y, bins = (x_bins, y_bins), norm = matplotlib.colors.LogNorm(), cmap = plt.cm.YlOrRd)
 
     #max_x = 50
     max_y = 200
+    max_x = 200
     ax.set_xlim([0, max_x])
     ax.set_ylim([0, 1.1 * max_y])
+    ax.plot([0, max_x], [88.4, 88.4], "k-")
 
     x_ticks = np.arange(0, max_x + 25, 25)
     ax.set_xticks(x_ticks)
@@ -314,6 +341,7 @@ def plot_feshape_overlay(data_map, param_name = "",
     ax.set_xticklabels(x_tick_labels)
     ax.grid(which = "both")
 
+
     ##
     ## metadata text
     ##
@@ -321,6 +349,8 @@ def plot_feshape_overlay(data_map, param_name = "",
 
     if select_pixel_address[0] >= 0 or select_pixel_address[1] >= 0 :
         ax.text(0.39, 1.02, f": Pixel ({select_pixel_address[0]},{select_pixel_address[1]})", transform = ax.transAxes, weight = "bold")
+    elif do_core_averaging :
+        ax.text(0.39, 1.02, f": {n_cores_max} cores (per-core averaging)", transform = ax.transAxes, weight = "bold")
     else :
         ax.text(0.39, 1.02, f": Many pixels", transform = ax.transAxes, weight = "bold")
 
@@ -335,6 +365,7 @@ def plot_feshape_overlay(data_map, param_name = "",
                 sim_y_plot.append(sim_y_vals[ival])
         ax.plot(sim_x_plot, sim_y_plot, "k-", label = "Simulation")
 
+
     ##
     ## legend
     ##
@@ -343,6 +374,39 @@ def plot_feshape_overlay(data_map, param_name = "",
     fig.show()
     x = input()
     fig.savefig("fescope_plot.pdf", bbox_inches = "tight")
+
+    #if do_core_averaging :
+    if True :
+        x_data = []
+        y_data = []
+        z_data = []
+        mean0 = 0
+        for col in np.arange(0,8,1) :
+            for row in np.arange(0,8,1) :
+                address = (col,row)
+                z = np.array(core_map_z[address])
+                mean = np.mean(z)
+                std = np.std(z)
+                if col == 0 and row == 0 :
+                    mean0 = mean
+                delta = mean - mean0 
+                x_data.append(col)
+                y_data.append(row)
+                z_data.append(std)
+        print(f"MEAN Z_DATA = {np.mean(z_data)} ns")
+                
+        X = np.linspace(min(x_data), max(x_data), 8)
+        Y = np.linspace(min(y_data), max(y_data), 8)
+        X, Y = np.meshgrid(X,Y)
+        Z = griddata((x_data, y_data), z_data, (X,Y), method = "nearest")
+
+        fig, ax = plt.subplots(1,1)
+        p = ax.pcolormesh(X,Y,Z, cmap = "YlOrRd", shading = "auto")
+        cb = fig.colorbar(p)
+        cb.set_label(f"Std. Dev. of PToA Over Core Pixels ({n_cores_max} cores)")
+        fig.show()
+        _ = input()
+        
 
 def main() :
 
@@ -380,6 +444,7 @@ def main() :
     parser.add_argument("--dac-data", default = "",
         help = "Provide a file with DAC-to-mV relationship"
     )
+    parser.add_argument("--core-avg", default = False, action = "store_true")
     args = parser.parse_args()
 
     all_dirs = glob.glob(f"{args.input}/*")
@@ -399,7 +464,7 @@ def main() :
         print(f"ERROR Provided digital scan ToA map could not be found: \"{args.digital_scan}\"")
         sys.exit(1)
 
-    plot_feshape_overlay(data_map, param_name, param_vals, args.error, args.digital_scan, select_pixel_address, args.truncate, args.voff, args.sim_data, args.dac_data)
+    plot_feshape_overlay(data_map, param_name, param_vals, args.error, args.digital_scan, select_pixel_address, args.truncate, args.voff, args.sim_data, args.dac_data, args.core_avg)
 
     
 

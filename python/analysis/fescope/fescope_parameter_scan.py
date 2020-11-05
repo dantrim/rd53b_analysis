@@ -24,7 +24,7 @@ def dac_to_mv_conversion(dac_data_file) :
             if line.startswith("#") : continue
             fields = [x.strip() for x in line.split(",")]
             dac_setting = int(fields[0])
-            voltage = float(fields[2]) # get the data at 3000e (field[1] is 1500e)
+            voltage = float(fields[1])
             voltage_mV = voltage * 1e3
             dac2mv[dac_setting] = voltage_mV
     return dac2mv
@@ -42,7 +42,7 @@ def get_sim_data(simulation_data_file) :
             fields = line.split()
             time = float(fields[0])
             time_ns = 1e9 * time
-            pulse = float(fields[2])
+            pulse = float(fields[2]) # get the data at 3000e (field[1] is 1500e)
             pulse_mV = pulse * 1e3
 
             x_vals.append(time_ns)
@@ -117,6 +117,8 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
         x_vals_rising_edge, x_err_rising_edge = [], []
         x_vals_falling_edge, x_err_falling_edge = [], []
         y_vals_rising_edge, y_vals_falling_edge = [], []
+ 
+        x_err_left_falling_edge, x_err_right_falling_edge = [], []
 
         n_nonzero_pixels = 0
 
@@ -126,6 +128,7 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
                 all_toa_data = np.array(json.load(toa_file)["Data"])
                 all_tot_data = np.array(json.load(tot_file)["Data"])
                 digital_offset_map = np.array(json.load(digital_toa_file)["Data"])
+
 
                 ##
                 ## remove LR columns or specific pixel selected by the user
@@ -172,9 +175,9 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
                 n = len(all_toa_data)
                 #if th >= 500 :
                 #    break
-                #if n_nonzero_pixels > 0 :
-                #    if n <= 0.99 * n_nonzero_pixels :
-                #        break
+                if n_nonzero_pixels > 0 :
+                    if n <= 0.8 * n_nonzero_pixels :
+                        break
                 n_nonzero_pixels = n
 
                 ##
@@ -186,7 +189,6 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
                 ## rising edge points of interest and convert to ns
                 ##
                 t_conv = 1.5625
-                print(f" *** Using timing conversion factor: {t_conv} *** ")
                 mean_rising_edge = np.mean(all_toa_data) * t_conv
 
                 ##
@@ -213,11 +215,20 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
                 ##
                 ## falling edge points of interest and convert to ns
                 ##
+                falling_edge_data = (all_toa_data + all_tot_data) * t_conv
+                left_edge_falling_edge = np.min(falling_edge_data)
+                right_edge_falling_edge = np.max(falling_edge_data)
+                x_err_left_falling_edge.append(left_edge_falling_edge)
+                x_err_right_falling_edge.append(right_edge_falling_edge)
+
                 mean_falling_edge = np.mean(all_toa_data + all_tot_data) * t_conv
                 stddev_falling_edge = np.std(all_toa_data + all_tot_data) * t_conv
                 x_vals_falling_edge.append(mean_falling_edge)
                 x_err_falling_edge.append(stddev_falling_edge)
                 y_vals_falling_edge.append(th)
+
+                if th == 50 :
+                    print(f"XXX Param: {parameter_val} Mean ToA at th = {th}: {mean_rising_edge} +/- {stddev_rising_edge}")
 
                 ##
                 ## boundaries for plotting
@@ -232,6 +243,7 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
         parameter_label = str(int(abs(parameter_val)))
         if parameter_val < 0 :
             parameter_label = "neg. " + str(parameter_label)
+
 
         
         print(f" *** WARNING: REMOVING DATA POINTS *** ")
@@ -282,9 +294,13 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
             parameter_label = int(parameter_label) - 200
 
 
+        ##
+        ## ∆t offset
+        ##
+        #t_offset = x_vals_rising_edge[0] # th = 0
         if len(sim_x_vals) > 0 :
             t_offset = x_vals_rising_edge[0]
-            t_offset -= 1.44
+            #t_offset -= 1.44
             print(f"Applying ∆t shift in observed data of {t_offset} ns")
             x_vals_rising_edge = [x - abs(t_offset) for x in x_vals_rising_edge]
             x_vals_falling_edge = [x - abs(t_offset) for x in x_vals_falling_edge]
@@ -297,12 +313,14 @@ def plot_feshape_for_parameters(data_param_map, param_name = "",
         ## as a filled in area
         ##
         if do_error :
+            #ax.fill_betweenx(y_vals_falling_edge, x_err_left_falling_edge, x_err_right_falling_edge, alpha = 0.3, color = param_colors[iparam])
             ax.fill_betweenx(y_vals_falling_edge, x_vals_falling_edge - stddev_falling_edge, x_vals_falling_edge + stddev_falling_edge, alpha = 0.3, color = param_colors[iparam])
 
-    max_x = 180
-    #max_y = 400
+    #max_x = 50
+    max_y = 450
+    max_x = 300
     ax.set_xlim([0, max_x])
-    #ax.set_ylim([0, 1.1 * max_y])
+    ax.set_ylim([0, 1.1 * max_y])
 
     x_ticks = np.arange(0, max_x + 25, 25)
     ax.set_xticks(x_ticks)
